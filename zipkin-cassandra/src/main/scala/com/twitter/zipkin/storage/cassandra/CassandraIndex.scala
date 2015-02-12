@@ -39,7 +39,7 @@ case class CassandraIndex(
   serviceSpanNameIndex: ColumnFamily[String, Long, Long],
   annotationsIndex: ColumnFamily[ByteBuffer, Long, Long],
   durationIndex: ColumnFamily[Long, Long, String],
-  dataTimeToLive: Duration = 14.days
+  dataTimeToLive: Duration = 3.days
 ) extends Index {
 
   def close() {
@@ -262,6 +262,9 @@ case class CassandraIndex(
     val timestamp = lastAnnotation.timestamp
 
     val batch = annotationsIndex.batch
+    span.serviceName
+
+    val serviceName = span.serviceName.getOrElse("default_dtrace_service")
 
     span.annotations.filter { a =>
       // skip core annotations since that query can be done by service name/span name anyway
@@ -276,7 +279,7 @@ case class CassandraIndex(
           val col = Column[Long, Long](a.timestamp, span.traceId).ttl(dataTimeToLive)
           batch.insert(ByteBuffer.wrap(encode(endpoint.serviceName.toLowerCase, a.value.toLowerCase).getBytes), col)
         }
-        case None => // Nothin
+        case None => // Nothing
       }
     }
 
@@ -289,7 +292,14 @@ case class CassandraIndex(
           batch.insert(ByteBuffer.wrap(key ++ INDEX_DELIMITER.getBytes ++ Util.getArrayFromBuffer(ba.value)), col)
           batch.insert(ByteBuffer.wrap(key), col)
         }
-        case None =>
+        case None => {
+//          index span without end point
+          WRITE_REQUEST_COUNTER.incr(2)
+          val key = encode(serviceName, ba.key).getBytes
+          val col = Column[Long, Long](timestamp, span.traceId).ttl(dataTimeToLive)
+          batch.insert(ByteBuffer.wrap(key ++ INDEX_DELIMITER.getBytes ++ Util.getArrayFromBuffer(ba.value)), col)
+          batch.insert(ByteBuffer.wrap(key), col)
+        }
       }
     }
     val annFuture = batch.execute()
